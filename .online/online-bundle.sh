@@ -9,7 +9,7 @@ build_client() {
 
 download_pip_modules() {
     mkdir -p .tmp/pip
-    pip download -d .tmp/pip -r requirements.txt -r requirements_dev.txt -r requirements_all_ds.txt requirements_oracle_ds.txt requirements_bundles.txt
+    pip download -d .tmp/pip -r requirements.txt -r requirements_dev.txt -r requirements_all_ds.txt requirements_oracle_ds.txt
 }
 
 tar_artifacts() {
