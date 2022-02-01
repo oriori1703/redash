@@ -9,7 +9,7 @@ build_client() {
 
 download_pip_modules() {
     mkdir -p .tmp/pip
-    pip download -d .tmp/pip -r requirements.txt -r requirements_dev.txt -r requirements_all_ds.txt
+    pip download -d .tmp/pip -r requirements.txt -r requirements_dev.txt -r requirements_all_ds.txt requirements_oracle_ds.txt requirements_bundles.txt
 }
 
 tar_artifacts() {
@@ -52,7 +52,7 @@ bundle_folder() {
     base64 < ../redash.tar.gz > ../redash.txt
     cp .online/local-extract.sh ../local-extract.sh
     echo -e "\033[32m The packaging was successful! \033[0m"
-    echo -e "You can move \033[0;34mredash.txt\033[0m and \033[0;34local-extract.sh\033[0m to your offline environment."
+    echo -e "You can move \033[0;34mredash.txt\033[0m and \033[0;34mlocal-extract.sh\033[0m to your offline environment."
 }
 
 
