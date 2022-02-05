@@ -21,6 +21,7 @@ _build
 dump.rdb
 
 node_modules
+npm-packages-offline-cache
 .tmp
 .sass-cache
 npm-debug.log
