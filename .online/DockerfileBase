@@ -1,24 +1,56 @@
-FROM python:2-slim
+FROM node:14.17 as frontend-builder
+
+RUN npm install --global --force yarn@1.22.10
+
+# Controls whether to build the frontend assets
+ARG skip_frontend_build
+
+ENV CYPRESS_INSTALL_BINARY=0
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+
+RUN useradd -m -d /frontend redash
+USER redash
+
+WORKDIR /frontend
+COPY --chown=redash package.json yarn.lock .yarnrc /frontend/
+COPY --chown=redash viz-lib /frontend/viz-lib
+
+# Controls whether to instrument code for coverage information
+ARG code_coverage
+ENV BABEL_ENV=${code_coverage:+test}
+
+RUN if [ "x$skip_frontend_build" = "x" ] ; then yarn --frozen-lockfile --network-concurrency 1 --offline; fi
+
+COPY --chown=redash client /frontend/client
+COPY --chown=redash webpack.config.js /frontend/
+RUN if [ "x$skip_frontend_build" = "x" ] ; then yarn build; else mkdir -p /frontend/client/dist && touch /frontend/client/dist/multi_org.html && touch /frontend/client/dist/index.html; fi
+
+FROM --platform=linux/amd64 python:3.7-slim-buster
 
 EXPOSE 5000
 
+# Controls whether to install extra dependencies needed for all data sources.
+ARG skip_ds_deps
+# Controls whether to install dev dependencies.
+ARG skip_dev_deps
+
 RUN useradd --create-home redash
-ENV DEBIAN_FRONTEND noninteractive
 
 # Ubuntu packages
 RUN apt-get update && \
-  apt-get install -y curl gnupg && \
-  curl -sL https://deb.nodesource.com/setup_11.x | bash - && \
   apt-get install -y \
+    curl \
+    gnupg \
     build-essential \
     pwgen \
     libffi-dev \
     sudo \
     git-core \
     wget \
-    nodejs \
     # Postgres client
     libpq-dev \
+    # ODBC support:
+    g++ unixodbc-dev \
     # for SAML
     xmlsec1 \
     # Additional packages required for data sources:
@@ -26,33 +58,48 @@ RUN apt-get update && \
     default-libmysqlclient-dev \
     freetds-dev \
     libsasl2-dev \
-    libsasl2-2 \
-    libsasl2-modules-gssapi-mit \
-    krb5-user && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    unzip \
+    libsasl2-modules-gssapi-mit && \
+  # MSSQL ODBC Driver:
+  curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
+  curl https://packages.microsoft.com/config/debian/10/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+  apt-get update && \
+  ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/*
 
+ARG databricks_odbc_driver_url=https://databricks.com/wp-content/uploads/2.6.10.1010-2/SimbaSparkODBC-2.6.10.1010-2-Debian-64bit.zip
+RUN wget --quiet $databricks_odbc_driver_url -O /tmp/simba_odbc.zip \
+  && chmod 600 /tmp/simba_odbc.zip \
+  && unzip /tmp/simba_odbc.zip -d /tmp/ \
+  && dpkg -i /tmp/SimbaSparkODBC-*/*.deb \
+  && echo "[Simba]\nDriver = /opt/simba/spark/lib/64/libsparkodbc_sb64.so" >> /etc/odbcinst.ini \
+  && rm /tmp/simba_odbc.zip \
+  && rm -rf /tmp/SimbaSparkODBC*
 
-# Install Oracle Client and cx_Oracle
-USER root
-ENV ORACLE_INSTANTCLIENT_MAJOR 11.2
-ENV ORACLE_INSTANTCLIENT_VERSION 11.2.0.4.0
-ENV ORACLE /usr/local/oracle
-ENV ORACLE_HOME $ORACLE/lib/oracle/$ORACLE_INSTANTCLIENT_MAJOR/client64
-ENV LD_LIBRARY_PATH $LD_LIBRARY_PATH:$ORACLE_HOME/lib
-ENV C_INCLUDE_PATH $C_INCLUDE_PATH:$ORACLE/include/oracle/$ORACLE_INSTANTCLIENT_MAJOR/client64
-RUN echo 'Start install oracle client...' \
-    && apt-get update && apt-get install -y libaio1 curl rpm2cpio cpio \
-    && mkdir $ORACLE && TMP_DIR="$(mktemp -d)" && cd "$TMP_DIR" \
-    && curl -L https://github.com/sergeymakinen/docker-oracle-instant-client/raw/assets/oracle-instantclient$ORACLE_INSTANTCLIENT_MAJOR-basic-$ORACLE_INSTANTCLIENT_VERSION-1.x86_64.rpm -o basic.rpm \
-    && rpm2cpio basic.rpm | cpio -i -d -v && cp -r usr/* $ORACLE && rm -rf ./* \
-    && ln -s libclntsh.so.11.1 $ORACLE/lib/oracle/$ORACLE_INSTANTCLIENT_MAJOR/client64/lib/libclntsh.so.$ORACLE_INSTANTCLIENT_MAJOR \
-    && ln -s libocci.so.11.1 $ORACLE/lib/oracle/$ORACLE_INSTANTCLIENT_MAJOR/client64/lib/libocci.so.$ORACLE_INSTANTCLIENT_MAJOR \
-    && curl -L https://github.com/sergeymakinen/docker-oracle-instant-client/raw/assets/oracle-instantclient$ORACLE_INSTANTCLIENT_MAJOR-devel-$ORACLE_INSTANTCLIENT_VERSION-1.x86_64.rpm -o devel.rpm \
-    && rpm2cpio devel.rpm | cpio -i -d -v && cp -r usr/* $ORACLE && rm -rf "$TMP_DIR" \
-    && echo "$ORACLE_HOME/lib" > /etc/ld.so.conf.d/oracle.conf && chmod o+r /etc/ld.so.conf.d/oracle.conf && ldconfig \    
-    && rm -rf /var/lib/apt/lists/* && apt-get purge -y --auto-remove curl rpm2cpio cpio \
-    && cd /usr \
-    && pip install cx_Oracle==5.3
-RUN pip install ldap3
 WORKDIR /app
+
+# Disable PIP Cache and Version Check
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+
+# rollback pip version to avoid legacy resolver problem
+RUN pip install pip==20.2.4;
+
+# We first copy only the requirements file, to avoid rebuilding on every file change.
+COPY requirements_all_ds.txt ./
+RUN if [ "x$skip_ds_deps" = "x" ] ; then pip install -r requirements_all_ds.txt ; else echo "Skipping pip install -r requirements_all_ds.txt" ; fi
+
+COPY requirements_bundles.txt requirements_dev.txt ./
+RUN if [ "x$skip_dev_deps" = "x" ] ; then pip install -r requirements_dev.txt ; fi
+
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+COPY . /app
+COPY --from=frontend-builder /frontend/client/dist /app/client/dist
+RUN chown -R redash /app
+USER redash
+
+ENTRYPOINT ["/app/bin/docker-entrypoint"]
+CMD ["server"]
