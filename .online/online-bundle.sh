@@ -13,7 +13,7 @@ download_pip_modules() {
 }
 
 tar_artifacts() {
-    tar -cvf .online/artifact.tar node_modules client/dist .tmp/pip 
+    tar -cvf .online/artifact.tar npm-packages-offline-cache client/dist .tmp/pip 
 }
 
 build_base_image() {
